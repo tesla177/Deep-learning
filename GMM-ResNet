@@ -15,7 +15,7 @@ class GLAM(nn.Module):
         self.blocks = ModuleList()
         for _ in range(6):
             self.blocks.append(ResNetBlock(in_channels=512, groups=1, kernel_size=3))
-        self.bn = BatchNorm1d(512)
+        self.bn = nn.BatchNorm1d(512)
         self.maxpool = nn.AdaptiveMaxPool1d(1)
         self.classifier = nn.Linear(in_features=512, out_features=4)
 
