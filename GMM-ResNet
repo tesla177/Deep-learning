@@ -1,0 +1,35 @@
+class GLAM(nn.Module):
+    '''
+    GLobal-Aware Multiscale block with 3x3 convolutional kernels in CNN architecture
+    '''
+    def __init__(self, shape=(26,63), **kwargs):
+        super(GLAM, self).__init__()
+        self.gmm_ubm = load_gmm()
+        self.inplanes = len(self.gmm_ubm.w)
+        self.gmm_layer = GMMLayer(self.gmm_ubm)
+       
+        self.conv0 = nn.Conv1d(in_channels=512, out_channels=512, kernel_size=1, stride=1,
+                               padding=0, dilation=1, groups=1, bias=False)
+        self.bn0 = nn.BatchNorm1d(512)
+        self.relu0 = nn.ReLU(inplace=True)
+        self.blocks = ModuleList()
+        for _ in range(6):
+            self.blocks.append(ResNetBlock(in_channels=512, groups=1, kernel_size=3))
+        self.bn = BatchNorm1d(512)
+        self.maxpool = nn.AdaptiveMaxPool1d(1)
+        self.classifier = nn.Linear(in_features=512, out_features=4)
+
+    def forward(self, *input):
+        # input[0]: torch.Size([32, 1, 26, 63])
+        x = input[0].squeeze()
+        x = self.gmm_layer(x)
+        x = self.relu0(self.bn0(self.conv0(x)))
+        for idx in range(6):
+            x = self.blocks[idx](x)
+        x = self.bn(x)
+        x = self.maxpool(x)
+        x = x.squeeze(2)
+        x= self.classifier(x)
+
+
+        return x
