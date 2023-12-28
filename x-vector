@@ -1,0 +1,50 @@
+class GLAM(nn.Module):
+    '''
+       GLobal-Aware Multiscale block with 3x3 convolutional kernels in CNN architecture
+       '''
+
+    def __init__(self, shape=(26, 63), **kwargs):
+        super(GLAM, self).__init__()
+        self.tdnn_blocks = 5,
+        self.tdnn_channels = [512, 512, 512, 512, 1500],
+        self.tdnn_kernel_sizes = [5, 3, 3, 1, 1],
+        self.tdnn_dilations = [1, 2, 3, 1, 1],
+        self.lin_neurons = 512,
+        self.in_channels = 40,
+        self.blocks = nn.ModuleList()
+        self.blocks.extend(
+            [
+                nn.Conv1d(40, 512, kernel_size=5, padding=2, padding_mode='reflect', dilation=1),
+                nn.LeakyReLU(),
+                nn.BatchNorm1d(512),
+                nn.Conv1d(512, 512, kernel_size=3, padding=1, padding_mode='reflect', dilation=2),
+                nn.LeakyReLU(),
+                nn.BatchNorm1d(512),
+                nn.Conv1d(512, 512, kernel_size=3, padding=1, padding_mode='reflect', dilation=3),
+                nn.LeakyReLU(),
+                nn.BatchNorm1d(512),
+                nn.Conv1d(512, 512, kernel_size=1, padding_mode='reflect', dilation=1),
+                nn.LeakyReLU(),
+                nn.BatchNorm1d(512),
+                nn.Conv1d(512, 1500, kernel_size=1, padding_mode='reflect', dilation=1),
+                nn.LeakyReLU(),
+                nn.BatchNorm1d(1500),
+            ]
+
+        )
+        self.l = torch.nn.Linear(1500, 512, bias=True)
+        self.ad = torch.nn.AdaptiveAvgPool1d(1)
+        self.cl = nn.Linear(51, 4)
+
+    def forward(self, *input):
+        # input[0]: torch.Size([32, 1, 26, 63])
+        x = input[0].squeeze()
+
+        for layer in self.blocks:
+            x = layer(x)
+        x = x.permute([0, 2, 1])
+        x = self.l(x)
+        x = self.ad(x)
+        x = x.squeeze()
+        x = self.cl(x)
+        return x
