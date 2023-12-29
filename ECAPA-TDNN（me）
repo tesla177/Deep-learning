@@ -1,0 +1,177 @@
+class TDNNBlock(nn.Module):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size,
+        dilation,
+        activation=nn.ReLU,
+    ):
+        super(TDNNBlock, self).__init__()
+        self.conv = nn.Conv1d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            dilation=dilation,
+            padding=(kernel_size//2)
+        )
+        self.activation = nn.ReLU()
+        self.norm = nn.BatchNorm1d(out_channels)
+
+    def forward(self, x):
+        return self.norm(self.activation(self.conv(x)))
+
+
+class Res2NetBlock(torch.nn.Module):
+    def __init__(self, in_channels, out_channels, scale=8, kernel_size=3, dilation=1):
+        super(Res2NetBlock, self).__init__()
+        assert in_channels % scale == 0
+        assert out_channels % scale == 0
+
+        in_channel = in_channels // scale
+        hidden_channel = out_channels // scale
+
+        self.blocks = nn.ModuleList(
+            [
+                TDNNBlock(
+                    in_channel, hidden_channel, kernel_size=3, dilation=dilation
+                )
+                for i in range(scale - 1)
+            ]
+        )
+        self.scale = scale
+
+    def forward(self, x):
+        y = []
+        for i, x_i in enumerate(torch.chunk(x, self.scale, dim=1)):
+            if i == 0:
+                y_i = x_i
+            elif i == 1:
+                y_i = self.blocks[i - 1](x_i)
+            else:
+                y_i = self.blocks[i - 1](x_i + y_i)
+            y.append(y_i)
+        y = torch.cat(y, dim=1)
+        return y
+
+class SEBlock(nn.Module):
+    def __init__(self, in_channels, se_channels, out_channels):
+        super(SEBlock, self).__init__()
+
+        self.conv1 = nn.Conv1d(
+            in_channels=in_channels, out_channels=se_channels, kernel_size=1
+        )
+        self.relu = torch.nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv1d(
+            in_channels=se_channels, out_channels=out_channels, kernel_size=1
+        )
+        self.sigmoid = torch.nn.Sigmoid()
+
+    def forward(self, x, lengths=None):
+        s = x.mean(dim=2, keepdim=True)   # [8 ,64, 1]
+        s = self.relu(self.conv1(s))  # [8， 16， 1]
+        s = self.sigmoid(self.conv2(s))   # [8, 64, 1]
+
+        return s * x   # [8, 64, 120]
+
+class SERes2NetBlock(nn.Module):
+
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        res2net_scale=8,
+        se_channels=128,
+        kernel_size=1,
+        dilation=1,
+        activation=torch.nn.ReLU,
+        groups=1,
+    ):
+        super().__init__()
+        self.out_channels = out_channels
+        self.tdnn1 = TDNNBlock(
+            in_channels,
+            out_channels,
+            kernel_size=1,
+            dilation=1,
+            activation=activation,
+        )
+        self.res2net_block = Res2NetBlock(
+            out_channels, out_channels, res2net_scale, kernel_size, dilation
+        )
+        self.tdnn2 = TDNNBlock(
+            out_channels,
+            out_channels,
+            kernel_size=1,
+            dilation=1,
+            activation=activation,
+        )
+        self.se_block = SEBlock(out_channels, se_channels, out_channels)
+
+        self.shortcut = None
+        if in_channels != out_channels:
+            self.shortcut = nn.Conv1d(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=1,
+            )
+
+    def forward(self, x):
+        """Processes the input tensor x and returns an output tensor."""
+        residual = x
+        if self.shortcut:
+            residual = self.shortcut(x)
+
+        x = self.tdnn1(x)
+        x = self.res2net_block(x)
+        x = self.tdnn2(x)
+        x = self.se_block(x)
+
+        return x + residual
+class GLAM(nn.Module):
+    '''
+       GLobal-Aware Multiscale block with 3x3 convolutional kernels in CNN architecture
+       '''
+
+    def __init__(self, shape=(26, 63), **kwargs):
+        super(GLAM, self).__init__()
+        self.block = nn.ModuleList()
+        self.block.append(
+            TDNNBlock(
+                26, 512, 5, 1, activation=nn.ReLU()
+            )
+        )
+        self.block.append(
+            SERes2NetBlock(
+                512, 512, 8, 128, 3, 1, nn.ReLU(),
+            )
+        )
+        self.block.append(
+            SERes2NetBlock(
+                512, 512, 8, 128, 3, 1, nn.ReLU(),
+            )
+        )
+        self.block.append(
+            SERes2NetBlock(
+                512, 512, 8, 128, 3, 1, nn.ReLU(),
+            )
+        )
+        self.bn = nn.BatchNorm1d(1536)
+        self.maxpool = nn.AdaptiveMaxPool1d(1)
+        self.classifier = nn.Linear(in_features=1536, out_features=4)
+
+
+    def forward(self, *input):
+        # input[0]: torch.Size([32, 1, 26, 63])
+        x = input[0].squeeze()
+
+        x1 = []
+        for layer in self.block:
+            x = layer(x)
+            x1.append(x)
+        x = torch.cat(x1[1:], dim=1)
+        x = self.bn(x)
+        x = self.maxpool(x)
+        x = x.squeeze(2)
+        x = self.classifier(x)
+        return x
