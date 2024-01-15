@@ -1,0 +1,66 @@
+class GLAM(nn.Module):
+    '''
+       GLobal-Aware Multiscale block with 3x3 convolutional kernels in CNN architecture
+       '''
+
+    def __init__(self, shape=(26, 63), in_channels=26, channels=512, embd_dim=192,**kwargs):
+        super(GLAM, self).__init__()
+        self.layer1 = Conv1dReluBn(in_channels, channels, kernel_size=5, padding=2)
+        self.layer2 = SE_Res2Block(channels, kernel_size=3, stride=1, padding=1, dilation=1, scale=8)
+        self.layer3 = SE_Res2Block(channels, kernel_size=3, stride=1, padding=1, dilation=1, scale=8)
+        self.layer4 = SE_Res2Block(channels, kernel_size=3, stride=1, padding=1, dilation=1, scale=8)
+
+        cat_channels = channels * 3
+        self.conv = nn.Conv1d(cat_channels, 1536, kernel_size=1)
+        self.pooling = AttentiveStatsPool(1536, 128)
+        self.bn1 = nn.BatchNorm1d(3072)
+        self.linear = nn.Linear(3072, embd_dim)
+        self.bn2 = nn.BatchNorm1d(embd_dim)
+        self.classifier = nn.Linear(embd_dim, 4)
+        self.LN = nn.LayerNorm([512,57])
+        self.mutilHead = nn.MultiheadAttention(embed_dim=512,num_heads=8)
+        self.d = nn.Dropout(p=0.5)
+        self.lh = nn.Linear(1024,512)
+
+
+
+
+
+    def forward(self, *input):
+        # input[0]: torch.Size([32, 1, 26, 63])
+        x = input[0].squeeze()
+        out1 = self.layer1(x)
+        out21 = self.layer2(out1)
+        out21 = out21 + out1
+        out22 = self.LN(out1).permute([0,2,1])
+        out22 = self.mutilHead(out22,out22,out22)[0].permute([0,2,1])
+        out22 = self.d(out22)
+        out23 = torch.cat([out21,out22],dim=1)
+        out2 = self.lh(out23.permute([0,2,1])).permute([0,2,1])
+
+        out31 = self.layer3(out2+out1)
+        out31 = out31 + out2
+        out32 = self.LN(out2+out1).permute([0,2,1])
+        out32 = self.mutilHead(out32, out32, out32)[0].permute([0,2,1])
+        out32 = self.d(out32)
+        out33 = torch.cat([out31,out32],dim=1)
+        out3 = self.lh(out33.permute([0, 2, 1])).permute([0, 2, 1])
+        out41 = self.layer4(out3+out2+out1)
+        out41 = out41 + out3
+        out42 = self.LN(out3+out2+out1).permute([0,2,1])
+        out42 = self.mutilHead(out42, out42, out42)[0].permute([0,2,1])
+        out42 = self.d(out42)
+        out43 = torch.cat([out41, out42], dim=1)
+        out4 = self.lh(out43.permute([0, 2, 1])).permute([0, 2, 1])
+
+        out = torch.cat([out2, out3, out4], dim=1)
+        out = F.relu(self.conv(out))
+        out = self.bn1(self.pooling(out))  #3072
+        out = self.bn2(self.linear(out))
+        out = self.classifier(out)
+        # x = self.bnamm(out)
+        # x = self.linearamm(out)
+        # x = F.linear(F.normalize(x.squeeze(1)), F.normalize(self.w))
+        #------------ResNet-----------
+
+        return out
